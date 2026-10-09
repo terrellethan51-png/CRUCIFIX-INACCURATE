@@ -26,52 +26,37 @@ local function parseColor3(textInput, fallback)
 	return fallback or Color3.fromRGB(255, 255, 255)
 end
 
-local function getRootTransformationAnchor(instance)
-	if not instance then return nil, nil end
-	
-	local targetRoot = instance:FindFirstChild("HumanoidRootPart") 
-		or instance:FindFirstChild("Torso") 
-		or instance:FindFirstChild("UpperTorso")
-		or instance:FindFirstChildOfClass("BasePart")
-		
-	if targetRoot then
-		return targetRoot, targetRoot.Position
-	elseif instance:IsA("Model") then
-		local primary = instance.PrimaryPart
-		if primary then
-			return primary, primary.Position
-		else
-			local cframe, size = instance:GetBoundingBox()
-			local tempAnchor = Instance.new("Part")
-			tempAnchor.Name = "CrucifixTemporaryAnchor"
-			tempAnchor.Size = Vector3.new(1, 1, 1)
-			tempAnchor.CFrame = cframe
-			tempAnchor.Transparency = 1
-			tempAnchor.Anchored = false
-			tempAnchor.CanCollide = false
-			tempAnchor.CanQuery = false
-			tempAnchor.Parent = instance
-			return tempAnchor, tempAnchor.Position
-		end
-	elseif instance:IsA("BasePart") then
-		return instance, instance.Position
-	end
-	return nil, nil
-end
+local function getTargetPositionAndParts(instance, defaultPosition)
+	local partsMap = {}
+	local targetPart = nil
+	local targetPosition = defaultPosition
 
--- Forcefully breaks anchor permissions across all descendants to allow physics manipulation
-local function clearPhysicsAnchors(instance)
-	if instance:IsA("BasePart") then
-		instance.Anchored = false
-	elseif instance:IsA("Model") then
-		local humanoid = instance:FindFirstChildOfClass("Humanoid")
-		if humanoid then humanoid.WalkSpeed = 0 end
-		for _, part in ipairs(instance:GetDescendants()) do
-			if part:IsA("BasePart") then
-				part.Anchored = false
+	if instance then
+		targetPart = instance:FindFirstChild("HumanoidRootPart") 
+			or instance:FindFirstChild("Torso") 
+			or instance:FindFirstChild("UpperTorso")
+			or instance:FindFirstChildOfClass("BasePart")
+
+		if targetPart then
+			targetPosition = targetPart.Position
+		elseif instance:IsA("Model") then
+			targetPosition = instance:GetPivot().Position
+		elseif instance:IsA("BasePart") then
+			targetPosition = instance.Position
+		end
+
+		if instance:IsA("Model") then
+			local humanoid = instance:FindFirstChildOfClass("Humanoid")
+			if humanoid then humanoid.WalkSpeed = 0 end
+			for _, part in ipairs(instance:GetDescendants()) do
+				if part:IsA("BasePart") then partsMap[part] = part.CFrame end
 			end
+		elseif instance:IsA("BasePart") then
+			partsMap[instance] = instance.CFrame
 		end
 	end
+
+	return targetPosition, partsMap
 end
 
 -- ============================================================================
@@ -250,13 +235,13 @@ local function setupMobileFriendlyDrag()
 			input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
 		end
 	end)
-mainFrame.InputChanged:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end end)
-UserInputService.InputChanged:Connect(function(input)
-if input == dragInput and dragging then
-local delta = input.Position - dragStart
-mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-end
-end)
+	mainFrame.InputChanged:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end end)
+	UserInputService.InputChanged:Connect(function(input)
+		if input == dragInput and dragging then
+			local delta = input.Position - dragStart
+			mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end)
 end
 setupMobileFriendlyDrag()
 minimizeBtn.MouseButton1Click:Connect(function()
@@ -266,27 +251,16 @@ else scrollFrame.Visible = true; mainFrame.Size = UDim2.new(0, 240, 0, 440); min
 end)
 closeBtn.MouseButton1Click:Connect(function() if targetOutline then targetOutline:Destroy() end screenGui:Destroy() end)
 -- ============================================================================
--- ⚡ SECTION 3: REBUILT 3D CRUCIFIXION ANIMATION PIPELINE
+-- ⚡ SECTION 3: PURE VISUAL CALCULATION MOVEMENT PIPELINE
 -- ============================================================================
-local function spawnCustomCrucifix(target)
-if not target then return end
--- Forcefully unanchors every part so the physics engine can control it
-clearPhysicsAnchors(target)
-local targetPart, targetPosition = getRootTransformationAnchor(target)
-if not targetPart then return end
--- Linear force mover
-local bodyVel = Instance.new("BodyVelocity")
-bodyVel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-bodyVel.Velocity = Vector3.new(0, 0, 0)
-bodyVel.Parent = targetPart
--- Angular force mover (Prevents unanchored object from tipping over or tumbling during startup)
-local bodyGyro = Instance.new("BodyAngularVelocity")
-bodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-bodyGyro.AngularVelocity = Vector3.new(0, 0, 0)
-bodyGyro.Parent = targetPart
+local function spawnCustomCrucifix(target, fallbackRaycastPos)
+-- Fallback spatial dot generation if no valid world models were captured
+local targetPosition, partsMap = getTargetPositionAndParts(target, fallbackRaycastPos)
+if not targetPosition then return end
+local currentActiveTargetPos = targetPosition
 local ringContainer = Instance.new("Part")
 ringContainer.Size = Vector3.new(1, 1, 1)
-ringContainer.Position = targetPart.Position - Vector3.new(0, 3, 0)
+ringContainer.Position = targetPosition - Vector3.new(0, 3, 0)
 ringContainer.Anchored = true
 ringContainer.CanCollide = false
 ringContainer.Transparency = 1
@@ -294,7 +268,7 @@ ringContainer.Parent = workspace
 local function makeSigilRing(name, assetField, tintField)
 local ring = Instance.new("Part")
 ring.Size = Vector3.new(13, 0.4, 13)
-ring.Anchored = false
+ring.Anchored = true
 ring.CanCollide = false
 ring.Transparency = 0
 ring.Color = parseColor3(tintField, Color3.fromRGB(255, 255, 255))
@@ -315,8 +289,6 @@ else
 ring.Material = Enum.Material.Neon
 ring.Transparency = 0.45
 end
-local weld = Instance.new("WeldConstraint")
-weld.Part0 = ringContainer; weld.Part1 = ring; weld.Parent = ring
 return ring
 end
 local plateCenter = makeSigilRing("Center", inputCenter, tintCenter)
@@ -329,7 +301,7 @@ local sAct = Instance.new("Sound") sAct.SoundId = rawActId sAct.Volume = 3 sAct.
 end
 local rawScrId = formatId(inputScreamSound)
 if rawScrId ~= "" then
-local sScr = Instance.new("Sound") sScr.SoundId = rawScrId sScr.Volume = 3 sScr.Parent = targetPart sScr:Play()
+local sScr = Instance.new("Sound") sScr.SoundId = rawScrId sScr.Volume = 3 sScr.Parent = ringContainer sScr:Play()
 end
 local function createChainLine()
 local p = Instance.new("Part")
@@ -338,21 +310,13 @@ p.Anchored = true; p.CanCollide = false; p.Transparency = 0.2
 p.Color = parseColor3(tintChain, Color3.fromRGB(150, 200, 255))
 p.Material = Enum.Material.Neon
 p.Parent = workspace
-local formattedChainUrl = formatId(inputChain)
-if formattedChainUrl ~= "" then
-local txt = Instance.new("Texture")
-txt.Texture = formattedChainUrl
-txt.Face = Enum.NormalId.Front
-txt.StudsPerTileU = 1.5; txt.StudsPerTileV = 1.5
-txt.Parent = p
-end
 return p
 end
 local structuralChains = {}
 for i = 1, 6 do table.insert(structuralChains, createChainLine()) end
 local rAngle, cAngle = 0, 0
 local ritualLoop = RunService.RenderStepped:Connect(function(dt)
-if not ringContainer.Parent or not targetPart.Parent then return end
+if not ringContainer.Parent then return end
 rAngle = (rAngle + (40 * dt)) % 360
 cAngle = (cAngle + (25 * dt)) % 360
 plateCenter.CFrame = ringContainer.CFrame
@@ -360,30 +324,53 @@ local currentCenterPos = ringContainer.Position
 plateInner.CFrame = CFrame.new(currentCenterPos) * CFrame.Angles(0, math.radians(-rAngle * 1.5), 0)
 plateMid.CFrame   = CFrame.new(currentCenterPos) * CFrame.Angles(0, math.radians(rAngle * 0.8), 0)
 plateOuter.CFrame = CFrame.new(currentCenterPos) * CFrame.Angles(0, math.radians(-rAngle * 0.4), 0)
-local currentTargetPos = targetPart.Position
 for idx, chain in ipairs(structuralChains) do
 local offsetDeg = ((idx - 1) * 60) + (cAngle * 1.2)
 local rad = math.radians(offsetDeg)
-local perimeterPos = (ringContainer.CFrame * CFrame.new(math.cos(rad) * 6.5, targetPosition.Y - currentTargetPos.Y - 3, math.sin(rad) * 6.5)).Position
-local dist = (perimeterPos - currentTargetPos).Magnitude
+local perimeterPos = (ringContainer.CFrame * CFrame.new(math.cos(rad) * 6.5, targetPosition.Y - currentActiveTargetPos.Y - 3, math.sin(rad) * 6.5)).Position
+local dist = (perimeterPos - currentActiveTargetPos).Magnitude
 chain.Size = Vector3.new(0.4, 0.4, dist)
-chain.CFrame = CFrame.lookAt(perimeterPos, currentTargetPos) * CFrame.new(0, 0, -dist / 2)
+chain.CFrame = CFrame.lookAt(perimeterPos, currentActiveTargetPos) * CFrame.new(0, 0, -dist / 2)
 end
 end)
+-- Frame-by-frame mathematical animation driver (Pure Client Manipulation Matrix)
 task.spawn(function()
-task.wait(4.0)
-bodyVel.Velocity = Vector3.new(0, 4, 0)
-task.wait(1.5)
-bodyVel.Velocity = Vector3.new(0, -15, 0)
+task.wait(4.0) -- Phase 1: Hold
+-- Phase 2: Ascension (Math vector interpolation lift)
+local tElevate = 1.5
+local elapsedE = 0
+while elapsedE < tElevate do
+local dt = RunService.Heartbeat:Wait()
+elapsedE = elapsedE + dt
+local alpha = math.sin((elapsedE / tElevate) * (math.pi / 2))
+currentActiveTargetPos = targetPosition + Vector3.new(0, alpha * 5.5, 0)
+for part, initialCF in pairs(partsMap) do
+if part.Parent then part.CFrame = initialCF * CFrame.new(0, alpha * 5.5, 0) end
+end
+end
+task.wait(0.5)
+-- Phase 3: Sinking Drag Banishment Fade Matrix
+local snapCFrames = {}
+for part, _ in pairs(partsMap) do if part.Parent then snapCFrames[part] = part.CFrame end end
+local baseElevatedPos = currentActiveTargetPos
+local tSink = 2.0
 local elapsedS = 0
-while elapsedS < 2.0 do
+while elapsedS < tSink do
 local dt = RunService.Heartbeat:Wait()
 elapsedS = elapsedS + dt
-for _, child in ipairs(target:GetDescendants()) do
-if child:IsA("BasePart") then child.Transparency = math.clamp(elapsedS / 2.0, 0, 1) end
+local progress = elapsedS / tSink
+local alpha = progress ^ 2
+currentActiveTargetPos = baseElevatedPos - Vector3.new(0, alpha * 22, 0)
+for part, snapCF in pairs(snapCFrames) do
+if part.Parent then
+part.CFrame = snapCF * CFrame.new(0, -alpha * 22, 0)
+part.Transparency = progress
 end
 end
-ritualLoop:Disconnect(); bodyVel:Destroy(); bodyGyro:Destroy(); target:Destroy()
+end
+-- Teardown
+ritualLoop:Disconnect()
+if target then target:Destroy() end
 for _, chain in ipairs(structuralChains) do chain:Destroy() end
 ringContainer:Destroy()
 end)
@@ -408,24 +395,50 @@ local castParams = RaycastParams.new()
 castParams.FilterType = Enum.RaycastFilterType.Exclude
 if player.Character then castParams.FilterDescendantsInstances = {player.Character, screenGui} end
 local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, castParams)
-if result and result.Instance then
-local ancestorModel = result.Instance:FindFirstAncestorOfClass("Model")
-selectedInstance = (ancestorModel and ancestorModel ~= workspace) and ancestorModel or result.Instance
+-- Banish Anything Protocol: If you click completely empty space, it captures the ray vector coordinate end
+local hitPoint = result and result.Position or (ray.Origin + ray.Direction * 40)
+local hitPart = result and result.Instance or nil
+local ancestorModel = hitPart and hitPart:FindFirstAncestorOfClass("Model") or nil
+selectedInstance = (ancestorModel and ancestorModel ~= workspace) and ancestorModel or hitPart
+-- Staging visual configuration check bounds
 targetOutline = Instance.new("Highlight")
 targetOutline.Name = "CrucifixStagingHighlight"
 targetOutline.FillColor = Color3.fromRGB(0, 255, 255)
 targetOutline.FillTransparency = 0.4
 targetOutline.OutlineColor = Color3.fromRGB(255, 255, 255)
-targetOutline.Adornee = selectedInstance; targetOutline.Parent = selectedInstance
+if selectedInstance then
+targetOutline.Adornee = selectedInstance
+targetOutline.Parent = selectedInstance
+else
+-- If empty air space clicked, create a local glowing client vector sphere dot to highlight position context
+local airMarker = Instance.new("Part")
+airMarker.Size = Vector3.new(2, 2, 2)
+airMarker.Shape = Enum.PartType.Ball
+airMarker.Color = Color3.fromRGB(0, 255, 255)
+airMarker.Material = Enum.Material.Neon
+airMarker.Transparency = 0.5
+airMarker.Anchored = true
+airMarker.CanCollide = false
+airMarker.Position = hitPoint
+airMarker.Parent = workspace
+selectedInstance = airMarker
+Debris:AddItem(airMarker, 4.5)
+end
+stagedPositionVector = hitPoint
 isAwaitingConfirmation = true
 notificationBanner.Text = "TAP ANYWHERE ON SCREEN TO BANISH"
-end
 else
 isChoosingTarget = false; isAwaitingConfirmation = false; notificationBanner.Visible = false
 local activeBanishmentTarget = selectedInstance
+local fallbackVector = stagedPositionVector
 if targetOutline then targetOutline:Destroy() targetOutline = nil end
 selectedInstance = nil
-spawnCustomCrucifix(activeBanishmentTarget)
+-- If it was a mock air vector, clear marker object out right before launch
+if activeBanishmentTarget and activeBanishmentTarget.Name == "Part" and activeBanishmentTarget.Parent == workspace then
+activeBanishmentTarget:Destroy()
+activeBanishmentTarget = nil
+end
+spawnCustomCrucifix(activeBanishmentTarget, fallbackVector)
 mainFrame.Visible = true
 end
 end
