@@ -10,7 +10,6 @@ local selectedInstance = nil
 local targetOutline = nil
 local isChoosingTarget = false
 local isMinimized = false
-local isAwaitingConfirmation = false
 
 local function formatId(rawText)
 	local numeric = rawText:gsub("%D", "")
@@ -26,37 +25,37 @@ local function parseColor3(textInput, fallback)
 	return fallback or Color3.fromRGB(255, 255, 255)
 end
 
-local function getTargetPositionAndParts(instance, defaultPosition)
-	local partsMap = {}
-	local targetPart = nil
-	local targetPosition = defaultPosition
-
-	if instance then
-		targetPart = instance:FindFirstChild("HumanoidRootPart") 
-			or instance:FindFirstChild("Torso") 
-			or instance:FindFirstChild("UpperTorso")
-			or instance:FindFirstChildOfClass("BasePart")
-
-		if targetPart then
-			targetPosition = targetPart.Position
-		elseif instance:IsA("Model") then
-			targetPosition = instance:GetPivot().Position
-		elseif instance:IsA("BasePart") then
-			targetPosition = instance.Position
+local function getRootTransformationAnchor(instance)
+	if not instance then return nil, nil end
+	
+	local targetRoot = instance:FindFirstChild("HumanoidRootPart") 
+		or instance:FindFirstChild("Torso") 
+		or instance:FindFirstChild("UpperTorso")
+		or instance:FindFirstChildOfClass("BasePart")
+		
+	if targetRoot then
+		return targetRoot, targetRoot.Position
+	elseif instance:IsA("Model") then
+		local primary = instance.PrimaryPart
+		if primary then
+			return primary, primary.Position
+		else
+			local cframe, size = instance:GetBoundingBox()
+			local tempAnchor = Instance.new("Part")
+			tempAnchor.Name = "CrucifixTemporaryAnchor"
+			tempAnchor.Size = Vector3.new(1, 1, 1)
+			tempAnchor.CFrame = cframe
+			tempAnchor.Transparency = 1
+			tempAnchor.Anchored = true
+			tempAnchor.CanCollide = false
+			tempAnchor.CanQuery = false
+			tempAnchor.Parent = instance
+			return tempAnchor, tempAnchor.Position
 		end
-
-		if instance:IsA("Model") then
-			local humanoid = instance:FindFirstChildOfClass("Humanoid")
-			if humanoid then humanoid.WalkSpeed = 0 end
-			for _, part in ipairs(instance:GetDescendants()) do
-				if part:IsA("BasePart") then partsMap[part] = part.CFrame end
-			end
-		elseif instance:IsA("BasePart") then
-			partsMap[instance] = instance.CFrame
-		end
+	elseif instance:IsA("BasePart") then
+		return instance, instance.Position
 	end
-
-	return targetPosition, partsMap
+	return nil, nil
 end
 
 -- ============================================================================
@@ -217,7 +216,7 @@ notificationBanner.Position = UDim2.new(0.5, -170, 0, 15)
 notificationBanner.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 notificationBanner.BorderSizePixel = 1
 notificationBanner.BorderColor3 = Color3.fromRGB(200, 50, 50)
-notificationBanner.Text = "TAP ONCE TO HIGHLIGHT TARGET"
+notificationBanner.Text = "TAP OR CLICK ON TARGET OBJECT TO BANISH"
 notificationBanner.TextColor3 = Color3.fromRGB(255, 200, 200)
 notificationBanner.Font = Enum.Font.SourceSansBold
 notificationBanner.TextSize = 12
@@ -244,6 +243,7 @@ local function setupMobileFriendlyDrag()
 	end)
 end
 setupMobileFriendlyDrag()
+
 minimizeBtn.MouseButton1Click:Connect(function()
 isMinimized = not isMinimized
 if isMinimized then scrollFrame.Visible = false; mainFrame.Size = UDim2.new(0, 240, 0, 35); minimizeBtn.Text = "+"
@@ -251,13 +251,40 @@ else scrollFrame.Visible = true; mainFrame.Size = UDim2.new(0, 240, 0, 440); min
 end)
 closeBtn.MouseButton1Click:Connect(function() if targetOutline then targetOutline:Destroy() end screenGui:Destroy() end)
 -- ============================================================================
--- ⚡ SECTION 3: PURE VISUAL CALCULATION MOVEMENT PIPELINE
+-- ⚡ SECTION 3: THE TRUE ORIGINAL LOCAL ANIMATION ENGINE
 -- ============================================================================
-local function spawnCustomCrucifix(target, fallbackRaycastPos)
--- Fallback spatial dot generation if no valid world models were captured
-local targetPosition, partsMap = getTargetPositionAndParts(target, fallbackRaycastPos)
-if not targetPosition then return end
-local currentActiveTargetPos = targetPosition
+local function spawnCustomCrucifix(target)
+if not target then return end
+local targetPart, targetPosition = getRootTransformationAnchor(target)
+if not targetPart then return end
+local visualCloneFolder = Instance.new("Folder")
+visualCloneFolder.Name = "LocalCrucifixClone"
+visualCloneFolder.Parent = workspace
+local clonedParts = {}
+local originalParts = {}
+local function cloneVisuals(obj)
+for _, child in ipairs(obj:GetDescendants()) do
+if child:IsA("BasePart") and child.Transparency < 1 then
+local clone = child:Clone()
+clone.Anchored = true
+clone.CanCollide = false
+clone.Parent = visualCloneFolder
+clonedParts[clone] = child.CFrame
+table.insert(originalParts, child)
+child.Transparency = 1
+end
+end
+if obj:IsA("BasePart") and obj.Transparency < 1 then
+local clone = obj:Clone()
+clone.Anchored = true
+clone.CanCollide = false
+clone.Parent = visualCloneFolder
+clonedParts[clone] = obj.CFrame
+table.insert(originalParts, obj)
+obj.Transparency = 1
+end
+end
+cloneVisuals(target)
 local ringContainer = Instance.new("Part")
 ringContainer.Size = Vector3.new(1, 1, 1)
 ringContainer.Position = targetPosition - Vector3.new(0, 3, 0)
@@ -303,6 +330,7 @@ local rawScrId = formatId(inputScreamSound)
 if rawScrId ~= "" then
 local sScr = Instance.new("Sound") sScr.SoundId = rawScrId sScr.Volume = 3 sScr.Parent = ringContainer sScr:Play()
 end
+-- RESTORED ORIGINAL 4 CORE GEOMETRIC CHAINS
 local function createChainLine()
 local p = Instance.new("Part")
 p.Size = Vector3.new(0.4, 0.4, 1)
@@ -312,47 +340,46 @@ p.Material = Enum.Material.Neon
 p.Parent = workspace
 return p
 end
-local structuralChains = {}
-for i = 1, 6 do table.insert(structuralChains, createChainLine()) end
-local rAngle, cAngle = 0, 0
+local structuralChains = {createChainLine(), createChainLine(), createChainLine(), createChainLine()}
+local rAngle = 0
+local liveVisualTargetPos = targetPosition
 local ritualLoop = RunService.RenderStepped:Connect(function(dt)
 if not ringContainer.Parent then return end
-rAngle = (rAngle + (40 * dt)) % 360
-cAngle = (cAngle + (25 * dt)) % 360
+rAngle = (rAngle + (50 * dt)) % 360
 plateCenter.CFrame = ringContainer.CFrame
 local currentCenterPos = ringContainer.Position
 plateInner.CFrame = CFrame.new(currentCenterPos) * CFrame.Angles(0, math.radians(-rAngle * 1.5), 0)
 plateMid.CFrame   = CFrame.new(currentCenterPos) * CFrame.Angles(0, math.radians(rAngle * 0.8), 0)
 plateOuter.CFrame = CFrame.new(currentCenterPos) * CFrame.Angles(0, math.radians(-rAngle * 0.4), 0)
+-- Classic 4-Corner Static Perimeter Mapping (Bypasses calculation lag entirely)
+local cornerOffsets = {
+Vector3.new(4.5, -3, 4.5),
+Vector3.new(-4.5, -3, 4.5),
+Vector3.new(4.5, -3, -4.5),
+Vector3.new(-4.5, -3, -4.5)
+}
 for idx, chain in ipairs(structuralChains) do
-local offsetDeg = ((idx - 1) * 60) + (cAngle * 1.2)
-local rad = math.radians(offsetDeg)
-local perimeterPos = (ringContainer.CFrame * CFrame.new(math.cos(rad) * 6.5, targetPosition.Y - currentActiveTargetPos.Y - 3, math.sin(rad) * 6.5)).Position
-local dist = (perimeterPos - currentActiveTargetPos).Magnitude
+local perimeterPos = currentCenterPos + cornerOffsets[idx]
+local dist = (perimeterPos - liveVisualTargetPos).Magnitude
 chain.Size = Vector3.new(0.4, 0.4, dist)
-chain.CFrame = CFrame.lookAt(perimeterPos, currentActiveTargetPos) * CFrame.new(0, 0, -dist / 2)
+chain.CFrame = CFrame.lookAt(perimeterPos, liveVisualTargetPos) * CFrame.new(0, 0, -dist / 2)
 end
 end)
--- Frame-by-frame mathematical animation driver (Pure Client Manipulation Matrix)
 task.spawn(function()
-task.wait(4.0) -- Phase 1: Hold
--- Phase 2: Ascension (Math vector interpolation lift)
+task.wait(4.0)
 local tElevate = 1.5
 local elapsedE = 0
 while elapsedE < tElevate do
 local dt = RunService.Heartbeat:Wait()
 elapsedE = elapsedE + dt
 local alpha = math.sin((elapsedE / tElevate) * (math.pi / 2))
-currentActiveTargetPos = targetPosition + Vector3.new(0, alpha * 5.5, 0)
-for part, initialCF in pairs(partsMap) do
-if part.Parent then part.CFrame = initialCF * CFrame.new(0, alpha * 5.5, 0) end
+liveVisualTargetPos = targetPosition + Vector3.new(0, alpha * 5.5, 0)
+for clone, origCF in pairs(clonedParts) do
+if clone.Parent then clone.CFrame = origCF * CFrame.new(0, alpha * 5.5, 0) end
 end
 end
 task.wait(0.5)
--- Phase 3: Sinking Drag Banishment Fade Matrix
-local snapCFrames = {}
-for part, _ in pairs(partsMap) do if part.Parent then snapCFrames[part] = part.CFrame end end
-local baseElevatedPos = currentActiveTargetPos
+local baseElevatedPos = liveVisualTargetPos
 local tSink = 2.0
 local elapsedS = 0
 while elapsedS < tSink do
@@ -360,86 +387,57 @@ local dt = RunService.Heartbeat:Wait()
 elapsedS = elapsedS + dt
 local progress = elapsedS / tSink
 local alpha = progress ^ 2
-currentActiveTargetPos = baseElevatedPos - Vector3.new(0, alpha * 22, 0)
-for part, snapCF in pairs(snapCFrames) do
-if part.Parent then
-part.CFrame = snapCF * CFrame.new(0, -alpha * 22, 0)
-part.Transparency = progress
+liveVisualTargetPos = baseElevatedPos - Vector3.new(0, alpha * 22, 0)
+for clone, origCF in pairs(clonedParts) do
+if clone.Parent then
+clone.CFrame = origCF * CFrame.new(0, (5.5 - (alpha * 22)), 0)
+clone.Transparency = progress
 end
 end
 end
--- Teardown
 ritualLoop:Disconnect()
+visualCloneFolder:Destroy()
 if target then target:Destroy() end
 for _, chain in ipairs(structuralChains) do chain:Destroy() end
 ringContainer:Destroy()
 end)
 end
 -- ============================================================================
--- 🎨 SECTION 4: TWO-TAP STATE TRACKING INPUT BINDINGS
+-- 📲 SECTION 4: RESTORED ORIGINAL SINGLE-CLICK DIRECT LAUNCHER
 -- ============================================================================
-local function clearStagedHighlight()
-if targetOutline then targetOutline:Destroy() targetOutline = nil end
-selectedInstance = nil; isAwaitingConfirmation = false
-end
 activateBtn.MouseButton1Click:Connect(function()
-mainFrame.Visible = false; isChoosingTarget = true; clearStagedHighlight()
-notificationBanner.Text = "TAP ONCE TO HIGHLIGHT TARGET"; notificationBanner.Visible = true
+mainFrame.Visible = false
+isChoosingTarget = true
+notificationBanner.Visible = true
+if targetOutline then targetOutline:Destroy() targetOutline = nil end
+selectedInstance = nil
 end)
 UserInputService.InputBegan:Connect(function(input, processed)
 if processed or not isChoosingTarget then return end
 if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-if not isAwaitingConfirmation then
+isChoosingTarget = false
+notificationBanner.Visible = false
 local ray = workspace.CurrentCamera:ScreenPointToRay(input.Position.X, input.Position.Y)
 local castParams = RaycastParams.new()
 castParams.FilterType = Enum.RaycastFilterType.Exclude
 if player.Character then castParams.FilterDescendantsInstances = {player.Character, screenGui} end
 local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, castParams)
--- Banish Anything Protocol: If you click completely empty space, it captures the ray vector coordinate end
-local hitPoint = result and result.Position or (ray.Origin + ray.Direction * 40)
-local hitPart = result and result.Instance or nil
-local ancestorModel = hitPart and hitPart:FindFirstAncestorOfClass("Model") or nil
-selectedInstance = (ancestorModel and ancestorModel ~= workspace) and ancestorModel or hitPart
--- Staging visual configuration check bounds
+if result and result.Instance then
+local ancestorModel = result.Instance:FindFirstAncestorOfClass("Model")
+selectedInstance = (ancestorModel and ancestorModel ~= workspace) and ancestorModel or result.Instance
 targetOutline = Instance.new("Highlight")
 targetOutline.Name = "CrucifixStagingHighlight"
 targetOutline.FillColor = Color3.fromRGB(0, 255, 255)
 targetOutline.FillTransparency = 0.4
 targetOutline.OutlineColor = Color3.fromRGB(255, 255, 255)
-if selectedInstance then
-targetOutline.Adornee = selectedInstance
-targetOutline.Parent = selectedInstance
-else
--- If empty air space clicked, create a local glowing client vector sphere dot to highlight position context
-local airMarker = Instance.new("Part")
-airMarker.Size = Vector3.new(2, 2, 2)
-airMarker.Shape = Enum.PartType.Ball
-airMarker.Color = Color3.fromRGB(0, 255, 255)
-airMarker.Material = Enum.Material.Neon
-airMarker.Transparency = 0.5
-airMarker.Anchored = true
-airMarker.CanCollide = false
-airMarker.Position = hitPoint
-airMarker.Parent = workspace
-selectedInstance = airMarker
-Debris:AddItem(airMarker, 4.5)
-end
-stagedPositionVector = hitPoint
-isAwaitingConfirmation = true
-notificationBanner.Text = "TAP ANYWHERE ON SCREEN TO BANISH"
-else
-isChoosingTarget = false; isAwaitingConfirmation = false; notificationBanner.Visible = false
+targetOutline.Adornee = selectedInstance; targetOutline.Parent = selectedInstance
 local activeBanishmentTarget = selectedInstance
-local fallbackVector = stagedPositionVector
+task.spawn(function()
+task.wait(0.2)
 if targetOutline then targetOutline:Destroy() targetOutline = nil end
-selectedInstance = nil
--- If it was a mock air vector, clear marker object out right before launch
-if activeBanishmentTarget and activeBanishmentTarget.Name == "Part" and activeBanishmentTarget.Parent == workspace then
-activeBanishmentTarget:Destroy()
-activeBanishmentTarget = nil
+end)
+spawnCustomCrucifix(activeBanishmentTarget)
 end
-spawnCustomCrucifix(activeBanishmentTarget, fallbackVector)
 mainFrame.Visible = true
-end
 end
 end)
