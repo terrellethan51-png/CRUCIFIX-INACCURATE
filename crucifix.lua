@@ -10,6 +10,7 @@ local selectedInstance = nil
 local targetOutline = nil
 local isChoosingTarget = false
 local isMinimized = false
+local isAwaitingConfirmation = false
 
 local function formatId(rawText)
 	local numeric = rawText:gsub("%D", "")
@@ -46,7 +47,7 @@ local function getRootTransformationAnchor(instance)
 			tempAnchor.Size = Vector3.new(1, 1, 1)
 			tempAnchor.CFrame = cframe
 			tempAnchor.Transparency = 1
-			tempAnchor.Anchored = true
+			tempAnchor.Anchored = false
 			tempAnchor.CanCollide = false
 			tempAnchor.CanQuery = false
 			tempAnchor.Parent = instance
@@ -58,8 +59,23 @@ local function getRootTransformationAnchor(instance)
 	return nil, nil
 end
 
+-- Forcefully breaks anchor permissions across all descendants to allow physics manipulation
+local function clearPhysicsAnchors(instance)
+	if instance:IsA("BasePart") then
+		instance.Anchored = false
+	elseif instance:IsA("Model") then
+		local humanoid = instance:FindFirstChildOfClass("Humanoid")
+		if humanoid then humanoid.WalkSpeed = 0 end
+		for _, part in ipairs(instance:GetDescendants()) do
+			if part:IsA("BasePart") then
+				part.Anchored = false
+			end
+		end
+	end
+end
+
 -- ============================================================================
--- 🎨 SECTION 1: PROCEDURAL INTERFACE GENERATION
+-- 🎨 SECTION 1: INTERFACE LAYER GENERATION
 -- ============================================================================
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "CrucifixAdvancedAdminPanel"
@@ -216,7 +232,7 @@ notificationBanner.Position = UDim2.new(0.5, -170, 0, 15)
 notificationBanner.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 notificationBanner.BorderSizePixel = 1
 notificationBanner.BorderColor3 = Color3.fromRGB(200, 50, 50)
-notificationBanner.Text = "TAP OR CLICK ON TARGET OBJECT TO BANISH"
+notificationBanner.Text = "TAP ONCE TO HIGHLIGHT TARGET"
 notificationBanner.TextColor3 = Color3.fromRGB(255, 200, 200)
 notificationBanner.Font = Enum.Font.SourceSansBold
 notificationBanner.TextSize = 12
@@ -224,40 +240,50 @@ notificationBanner.Visible = false
 notificationBanner.Parent = screenGui
 
 -- ============================================================================
--- 📲 SECTION 2: SAMPLING & UTILITY MECHANICS
+-- 📲 SECTION 2: MOBILE DRAG WRAPPERS
 -- ============================================================================
+local function setupMobileFriendlyDrag()
+	local dragging, dragInput, dragStart, startPos
+	mainFrame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true; dragStart = input.Position; startPos = mainFrame.Position
+			input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
+		end
+	end)
+mainFrame.InputChanged:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end end)
+UserInputService.InputChanged:Connect(function(input)
+if input == dragInput and dragging then
+local delta = input.Position - dragStart
+mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+end)
+end
+setupMobileFriendlyDrag()
 minimizeBtn.MouseButton1Click:Connect(function()
-	isMinimized = not isMinimized
-	if isMinimized then
-		scrollFrame.Visible = false
-		mainFrame.Size = UDim2.new(0, 240, 0, 35)
-		minimizeBtn.Text = "+"
-	else
-		scrollFrame.Visible = true
-		mainFrame.Size = UDim2.new(0, 240, 0, 440)
-		minimizeBtn.Text = "-"
-	end
+isMinimized = not isMinimized
+if isMinimized then scrollFrame.Visible = false; mainFrame.Size = UDim2.new(0, 240, 0, 35); minimizeBtn.Text = "+"
+else scrollFrame.Visible = true; mainFrame.Size = UDim2.new(0, 240, 0, 440); minimizeBtn.Text = "-" end
 end)
-
-closeBtn.MouseButton1Click:Connect(function()
-	if targetOutline then targetOutline:Destroy() end
-	screenGui:Destroy()
-end)
-
+closeBtn.MouseButton1Click:Connect(function() if targetOutline then targetOutline:Destroy() end screenGui:Destroy() end)
 -- ============================================================================
--- ⚡ SECTION 3: THE PHYSICAL INSULATED CRUCIFIXION PIPELINE
+-- ⚡ SECTION 3: REBUILT 3D CRUCIFIXION ANIMATION PIPELINE
 -- ============================================================================
 local function spawnCustomCrucifix(target)
-	if not target then return end
-	local targetPart, targetPosition = getRootTransformationAnchor(target)
-	if not targetPart then return end
-
-	-- Bypasses server position drops by injecting a localized physics mover directly into the target torso
+if not target then return end
+-- Forcefully unanchors every part so the physics engine can control it
+clearPhysicsAnchors(target)
+local targetPart, targetPosition = getRootTransformationAnchor(target)
+if not targetPart then return end
+-- Linear force mover
 local bodyVel = Instance.new("BodyVelocity")
-bodyVel.MaxForce = Vector3.new(4e5, 4e5, 4e5)
+bodyVel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
 bodyVel.Velocity = Vector3.new(0, 0, 0)
 bodyVel.Parent = targetPart
--- Structural ring container tracking baseline geometry
+-- Angular force mover (Prevents unanchored object from tipping over or tumbling during startup)
+local bodyGyro = Instance.new("BodyAngularVelocity")
+bodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+bodyGyro.AngularVelocity = Vector3.new(0, 0, 0)
+bodyGyro.Parent = targetPart
 local ringContainer = Instance.new("Part")
 ringContainer.Size = Vector3.new(1, 1, 1)
 ringContainer.Position = targetPart.Position - Vector3.new(0, 3, 0)
@@ -267,9 +293,10 @@ ringContainer.Transparency = 1
 ringContainer.Parent = workspace
 local function makeSigilRing(name, assetField, tintField)
 local ring = Instance.new("Part")
-ring.Size = Vector3.new(13, 0.05, 13)
+ring.Size = Vector3.new(13, 0.4, 13)
 ring.Anchored = false
 ring.CanCollide = false
+ring.Transparency = 0
 ring.Color = parseColor3(tintField, Color3.fromRGB(255, 255, 255))
 ring.Parent = ringContainer
 local formattedUrl = formatId(assetField)
@@ -286,7 +313,7 @@ mountDecalFace(Enum.NormalId.Top)
 mountDecalFace(Enum.NormalId.Bottom)
 else
 ring.Material = Enum.Material.Neon
-ring.Transparency = 0.85
+ring.Transparency = 0.45
 end
 local weld = Instance.new("WeldConstraint")
 weld.Part0 = ringContainer; weld.Part1 = ring; weld.Parent = ring
@@ -296,6 +323,14 @@ local plateCenter = makeSigilRing("Center", inputCenter, tintCenter)
 local plateInner  = makeSigilRing("Inner", inputInnerRing, tintInnerRing)
 local plateMid    = makeSigilRing("Middle", inputMidRing, tintMainCircle)
 local plateOuter  = makeSigilRing("Outer", inputOuterRing, tintOuterRing)
+local rawActId = formatId(inputActivationSound)
+if rawActId ~= "" then
+local sAct = Instance.new("Sound") sAct.SoundId = rawActId sAct.Volume = 3 sAct.Parent = ringContainer sAct:Play()
+end
+local rawScrId = formatId(inputScreamSound)
+if rawScrId ~= "" then
+local sScr = Instance.new("Sound") sScr.SoundId = rawScrId sScr.Volume = 3 sScr.Parent = targetPart sScr:Play()
+end
 local function createChainLine()
 local p = Instance.new("Part")
 p.Size = Vector3.new(0.4, 0.4, 1)
@@ -303,6 +338,14 @@ p.Anchored = true; p.CanCollide = false; p.Transparency = 0.2
 p.Color = parseColor3(tintChain, Color3.fromRGB(150, 200, 255))
 p.Material = Enum.Material.Neon
 p.Parent = workspace
+local formattedChainUrl = formatId(inputChain)
+if formattedChainUrl ~= "" then
+local txt = Instance.new("Texture")
+txt.Texture = formattedChainUrl
+txt.Face = Enum.NormalId.Front
+txt.StudsPerTileU = 1.5; txt.StudsPerTileV = 1.5
+txt.Parent = p
+end
 return p
 end
 local structuralChains = {}
@@ -321,81 +364,69 @@ local currentTargetPos = targetPart.Position
 for idx, chain in ipairs(structuralChains) do
 local offsetDeg = ((idx - 1) * 60) + (cAngle * 1.2)
 local rad = math.radians(offsetDeg)
-local perimeterPos = (ringContainer.CFrame * CFrame.new(math.cos(rad) * 6.5, 0, math.sin(rad) * 6.5)).Position
+local perimeterPos = (ringContainer.CFrame * CFrame.new(math.cos(rad) * 6.5, targetPosition.Y - currentTargetPos.Y - 3, math.sin(rad) * 6.5)).Position
 local dist = (perimeterPos - currentTargetPos).Magnitude
 chain.Size = Vector3.new(0.4, 0.4, dist)
 chain.CFrame = CFrame.lookAt(perimeterPos, currentTargetPos) * CFrame.new(0, 0, -dist / 2)
 end
 end)
--- Seamless detached thread automation lifecycle management handler
 task.spawn(function()
-task.wait(4.0) -- Phase 1: Lockdown hold interval
--- Phase 2: Ascension (Engage positive vertical vector forces)
+task.wait(4.0)
 bodyVel.Velocity = Vector3.new(0, 4, 0)
 task.wait(1.5)
--- Phase 3: Banishment Sink (Engage fast negative down-velocity drag forces)
 bodyVel.Velocity = Vector3.new(0, -15, 0)
 local elapsedS = 0
 while elapsedS < 2.0 do
 local dt = RunService.Heartbeat:Wait()
 elapsedS = elapsedS + dt
 for _, child in ipairs(target:GetDescendants()) do
-if child:IsA("BasePart") then
-child.Transparency = math.clamp(elapsedS / 2.0, 0, 1)
+if child:IsA("BasePart") then child.Transparency = math.clamp(elapsedS / 2.0, 0, 1) end
 end
 end
-end
--- Secure cleanup execution sequence
-ritualLoop:Disconnect()
-bodyVel:Destroy()
-target:Destroy()
+ritualLoop:Disconnect(); bodyVel:Destroy(); bodyGyro:Destroy(); target:Destroy()
 for _, chain in ipairs(structuralChains) do chain:Destroy() end
 ringContainer:Destroy()
 end)
 end
 -- ============================================================================
--- 📲 SECTION 4: DIRECT SINGLE-TAP TARGET LISTENER
+-- 🎨 SECTION 4: TWO-TAP STATE TRACKING INPUT BINDINGS
 -- ============================================================================
 local function clearStagedHighlight()
 if targetOutline then targetOutline:Destroy() targetOutline = nil end
-selectedInstance = nil
+selectedInstance = nil; isAwaitingConfirmation = false
 end
 activateBtn.MouseButton1Click:Connect(function()
-mainFrame.Visible = false
-isChoosingTarget = true
-notificationBanner.Visible = true
-clearStagedHighlight()
+mainFrame.Visible = false; isChoosingTarget = true; clearStagedHighlight()
+notificationBanner.Text = "TAP ONCE TO HIGHLIGHT TARGET"; notificationBanner.Visible = true
 end)
 UserInputService.InputBegan:Connect(function(input, processed)
 if processed or not isChoosingTarget then return end
 if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-isChoosingTarget = false
-notificationBanner.Visible = false
-local screenPos = input.Position
-local camera = workspace.CurrentCamera
-local ray = camera:ScreenPointToRay(screenPos.X, screenPos.Y)
+if not isAwaitingConfirmation then
+local ray = workspace.CurrentCamera:ScreenPointToRay(input.Position.X, input.Position.Y)
 local castParams = RaycastParams.new()
 castParams.FilterType = Enum.RaycastFilterType.Exclude
 if player.Character then castParams.FilterDescendantsInstances = {player.Character, screenGui} end
 local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, castParams)
 if result and result.Instance then
-local rootHit = result.Instance
-local ancestorModel = rootHit:FindFirstAncestorOfClass("Model")
-selectedInstance = (ancestorModel and ancestorModel ~= workspace) and ancestorModel or rootHit
+local ancestorModel = result.Instance:FindFirstAncestorOfClass("Model")
+selectedInstance = (ancestorModel and ancestorModel ~= workspace) and ancestorModel or result.Instance
 targetOutline = Instance.new("Highlight")
 targetOutline.Name = "CrucifixStagingHighlight"
 targetOutline.FillColor = Color3.fromRGB(0, 255, 255)
 targetOutline.FillTransparency = 0.4
 targetOutline.OutlineColor = Color3.fromRGB(255, 255, 255)
-targetOutline.Adornee = selectedInstance
-targetOutline.Parent = selectedInstance
-local activeBanishmentTarget = selectedInstance
-task.spawn(function()
-task.wait(0.1)
-if targetOutline then targetOutline:Destroy() targetOutline = nil end
-end)
-spawnCustomCrucifix(activeBanishmentTarget)
+targetOutline.Adornee = selectedInstance; targetOutline.Parent = selectedInstance
+isAwaitingConfirmation = true
+notificationBanner.Text = "TAP ANYWHERE ON SCREEN TO BANISH"
 end
+else
+isChoosingTarget = false; isAwaitingConfirmation = false; notificationBanner.Visible = false
+local activeBanishmentTarget = selectedInstance
+if targetOutline then targetOutline:Destroy() targetOutline = nil end
+selectedInstance = nil
+spawnCustomCrucifix(activeBanishmentTarget)
 mainFrame.Visible = true
+end
 end
 end)
